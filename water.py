@@ -9,6 +9,8 @@ from shapely.geometry import Point
 import numpy as np
 from matplotlib.colors import ListedColormap
 import pyproj
+from scipy.ndimage import geometric_transform
+from skimage.transform import warp_polar
 
 def fetch_water_bodies(south, west, north, east, filename="overpass_data.json"):
     """
@@ -121,7 +123,7 @@ def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resol
     cmap = ListedColormap(colors, N=2)
 
     # Draw the grid as an image with the custom colormap
-    ax.imshow(grid, cmap=cmap, extent=extent_grid, origin='lower', zorder=3, aspect='auto')
+    #ax.imshow(grid, cmap=cmap, extent=extent_grid, origin='lower', zorder=3, aspect='auto')
 
     # Add OSM tiles as background
     ctx.add_basemap(ax = ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=1)
@@ -166,6 +168,7 @@ def create_occupancy_grid(data, south, west, north, east, resolution=0.0001, fil
     np.save(filename, grid)
     return grid
 
+
 def main():
     # Define a bounding box (e.g., around a part of a city or lake)
     south, west, north, east = 42.838070, -71.006272, 42.862226, -70.969131  # Bounding box around lake attitash
@@ -181,7 +184,6 @@ def main():
         print("No water polygons found in the specified bounding box.")
     else:
         grid = create_occupancy_grid(water_gdf, south, west, north, east)
-        plt.imshow(grid, cmap='gray', origin='lower')
         plot_with_osm_background_and_grid(water_gdf, grid, south, west, north, east)
 
 if __name__ == "__main__":
