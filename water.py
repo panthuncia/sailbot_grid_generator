@@ -9,8 +9,13 @@ from shapely.geometry import Point
 import numpy as np
 from matplotlib.colors import ListedColormap
 import pyproj
+from shapely.geometry import Polygon, LineString, MultiPolygon, shape
+from shapely.geometry import box
+from matplotlib.widgets import Button
+from shapely.ops import unary_union
 from scipy.ndimage import geometric_transform
 from skimage.transform import warp_polar
+import cv2
 
 def fetch_water_bodies(south, west, north, east, filename="overpass_data.json"):
     """
@@ -71,28 +76,51 @@ def overpass_json_to_geodf(data):
         if element["type"] == "way":
             try:
                 way_nodes = [nodes[node] for node in element["nodes"]]
-                # Checking if the way is closed to determine if it's a polygon
-                if way_nodes[0] == way_nodes[-1]:
-                    geometries.append({
-                        "type": "Polygon",
-                        "coordinates": [way_nodes]
-                    })
-                else:
-                    geometries.append({
-                        "type": "LineString",
-                        "coordinates": way_nodes
-                    })
-            except:
+                # If the way is not closed, add the first node at the end to close it
+                if way_nodes[0] != way_nodes[-1]:
+                    way_nodes.append(way_nodes[0])
+                polygon = shape({
+                    "type": "Polygon",
+                    "coordinates": [way_nodes]
+                })
+                # Check if the polygon is valid
+                if not polygon.is_valid:
+                    # Attempt to fix invalid polygons
+                    polygon = polygon.buffer(0)
+                geometries.append(polygon)
+            except Exception as e:
+                print(str(e))
                 continue  # Just skip any problematic ways
 
-    # Convert geometries list into a GeoDataFrame
-    gdf = gpd.GeoDataFrame.from_features({
-        "type": "FeatureCollection", 
-        "features": [{"type": "Feature", "geometry": geom, "properties": {}} for geom in geometries]  # Added "properties": {}
-    })
+    # Use unary_union to merge overlapping or adjacent polygons
+    merged_geometries = unary_union(geometries)
+
+    # Create a GeoDataFrame from the merged geometries
+    # If unary_union results in a single Polygon, we wrap it in a list to create a GeoDataFrame
+    if isinstance(merged_geometries, (Polygon, MultiPolygon)):
+        gdf = gpd.GeoDataFrame(geometry=[merged_geometries], crs="EPSG:4326")
+    else:
+        # Handle other types (e.g., if there's a mix of geometry types)
+        gdf = gpd.GeoDataFrame(geometry=list(merged_geometries), crs="EPSG:4326")
+
     return gdf
 
+
+vertices = []
+globalWest = 0
+globalSouth = 0
+globalGrid = None
+globalResolution = 0
+globalExtentMap = []
+
 def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resolution=0.0001):
+    global globalGrid
+    global globalWest
+    global globalSouth
+    global globalResolution
+    globalResolution = resolution
+    globalGrid = grid
+
     # Set the initial CRS to WGS 84 if it's not set already
     if gdf.crs is None:
         gdf = gdf.set_crs(epsg=4326)
@@ -104,79 +132,161 @@ def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resol
     fig, ax = plt.subplots(figsize=(12, 12))
 
     # Plot the polygons on the axis
-    gdf.plot(ax=ax, alpha=0.5, color='blue', edgecolor='k', zorder=2)
-
-    # Determine the extent in Web Mercator coordinates
-    x_min, y_min, x_max, y_max = ax.axis()
-    extent_map = [x_min, x_max, y_min, y_max]
+    #gdf.plot(ax=ax, alpha=0.5, color='blue', edgecolor='k', zorder=2)
 
     # Adjust the grid extent to the map's coordinate system (from lat-lon to Web Mercator)
     transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
 
     new_west, new_south = transformer.transform(west, south)
+    globalWest = west
+    globalSouth = south
     new_east, new_north = transformer.transform(east, north)
 
     extent_grid = [new_west, new_east, new_south, new_north]
+    global globalExtentMap
+    globalExtentMap = extent_grid
 
     # Create a custom colormap where '0' values (unknown) are set as transparent
     colors = [(0, 0, 0, 0), (0, 0, 0, 1)]  # RGBA colors (transparent, black)
     cmap = ListedColormap(colors, N=2)
 
     # Draw the grid as an image with the custom colormap
-    #ax.imshow(grid, cmap=cmap, extent=extent_grid, origin='lower', zorder=3, aspect='auto')
+    ax.imshow(grid, cmap=cmap, extent=extent_grid, origin='lower', zorder=3, aspect='auto')
 
     # Add OSM tiles as background
     ctx.add_basemap(ax = ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=1)
+
+    def onclick(event):
+        print("Got click!")
+        toolbar = plt.get_current_fig_manager().toolbar
+        if not (event.inaxes == ax and toolbar.mode == ''):
+            return
+        global vertices
+        if event.inaxes != ax:
+            return
+
+        # Get the click coordinates in Web Mercator
+        click_x, click_y = event.xdata, event.ydata
+
+        transformer_reverse = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+        # Transform these coordinates back to lat/lon
+        lon, lat = transformer_reverse.transform(click_x, click_y)
+
+        global globalResolution
+        ix = int((lon - globalWest) / globalResolution)
+        iy = int((lat - globalSouth) / globalResolution)
+        vertices.append((ix, iy))
+        
+        # Plot the point for visual confirmation
+        plt.plot(click_x, click_y, 'ro')
+        plt.draw()
+
+    def onkeypress(event):
+        """Handle key press events."""
+        global globalGrid, vertices
+        if event.key == 't':
+            if vertices:
+                # Transform vertices from plot pixel coordinates to grid indices
+                transformed_vertices = [(int(x), int(globalGrid.shape[0] - 1 - y)) for x, y in vertices]
+                new_water_area = Polygon(transformed_vertices)
+                for ix in range(globalGrid.shape[1]):
+                    for iy in range(globalGrid.shape[0]):
+                        # Check contains using grid indices
+                        if new_water_area.contains(Point(ix, grid.shape[0] - 1 - iy)):
+                            globalGrid[iy, ix] = 1
+                np.save("updated_grid.npy", globalGrid)
+                grid_binary = (grid * 255).astype(np.uint8)
+                cv2.imwrite("updated_image.png", grid_binary)
+                vertices = []  # Clear vertices for next polygon
+                ax.clear()
+                colors = [(0, 0, 0, 0), (0, 0, 0, 1)]  # RGBA colors (transparent, black)
+                cmap = ListedColormap(colors, N=2)
+                global globalExtentMap
+                ax.imshow(globalGrid, cmap=cmap, extent=globalExtentMap, origin='lower', zorder=3, aspect='auto')
+                ctx.add_basemap(ax = ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=1)
+                
+                plt.draw()
+
+        cid = fig.canvas.mpl_connect('button_press_event', onclick)
+
+    fig.canvas.mpl_connect('key_press_event', onkeypress)
+    fig.canvas.mpl_connect('button_press_event', onclick)
 
     # Show the plot
     plt.show()
 
 def create_occupancy_grid(data, south, west, north, east, resolution=0.0001, filename = "grid_binary.npy"):
     """
-    Create an occupancy grid from water body data.
+    Create an occupancy grid from water body data, checking for cell intersection with geometries.
     Parameters:
         - data: GeoDataFrame containing the water bodies.
         - south, west, north, east (float): Bounding box coordinates.
         - resolution (float): Size of each cell in lat/lon degrees.
     Returns:
         - numpy.ndarray: Occupancy grid.
-    """
-    
+    """ 
     if os.path.exists(filename):
         with open(filename, 'r') as f:
-            return np.load(filename)
-
-    # 0 for unknown, 1 for occupied, -1 for free
-    grid_x = int((east - west) / resolution)+1
-    grid_y = int((north - south) / resolution)+1
+            grid = np.load(filename)
+            grid_binary = (grid * 255).astype(np.uint8)
+            cv2.imwrite("image.png", grid_binary)
+            return grid
+    # Calculate the number of cells in the grid
+    grid_x = int((east - west) / resolution) + 1
+    grid_y = int((north - south) / resolution) + 1
     grid = np.zeros((grid_y, grid_x))
     
-    # Iterate through each polygon in the data
-    for geometry in data['geometry']:
-        if geometry is not None and not geometry.is_empty:
-            for x in np.arange(west, east, resolution):
-                for y in np.arange(south, north, resolution):
-                    cell_center = Point(x + resolution/2, y + resolution/2)
-                    if geometry.contains(cell_center):
-                        ix = int((x - west) / resolution)
-                        iy = int((y - south) / resolution)
-                        grid[iy, ix] = 1  # Mark as occupied
+    # # Iterate through each polygon in the data
+    # for geometry in data['geometry']:
+    #     if geometry is not None and not geometry.is_empty:
+    #         for ix in range(grid_x):
+    #             for iy in range(grid_y):
+    #                 # Calculate the bounds of the current cell
+    #                 x_min = west + ix * resolution
+    #                 y_min = south + iy * resolution
+    #                 x_max = x_min + resolution
+    #                 y_max = y_min + resolution
+
+    #                 # Create a box for the current cell
+    #                 cell_box = box(x_min, y_min, x_max, y_max)
+
+    #                 # Check for intersection between the cell and the geometry
+    #                 if geometry.intersects(cell_box):
+    #                     grid[iy, ix] = 1  # Mark as occupied
                         
     # Optional: Mark free cells (cells not occupied by water)
     # grid[grid == 0] = -1
+    
     # Save the data to a file
     np.save(filename, grid)
+    grid_binary = (grid * 255).astype(np.uint8)
+    cv2.imwrite("image.png", grid_binary)
     return grid
 
+def fix_geometry(geometry):
+    """
+    Attempt to fix an open geometry by ensuring it is properly closed.
+    This function handles LineString and Polygon geometries.
+    """
+    if isinstance(geometry, LineString):
+        # Convert a LineString to a Polygon if it's not closed
+        if not geometry.is_ring:
+            # Attempt to close the LineString by creating a Polygon
+            return Polygon(geometry)
+    elif isinstance(geometry, Polygon):
+        # Ensure the Polygon is properly closed
+        exterior = geometry.exterior
+        if not exterior.is_ring:
+            # Close the polygon by creating a new one with the closed exterior
+            return Polygon(list(exterior.coords) + [exterior.coords[0]])
+    return geometry
 
 def main():
     # Define a bounding box (e.g., around a part of a city or lake)
-    south, west, north, east = 42.838070, -71.006272, 42.862226, -70.969131  # Bounding box around lake attitash
+    #south, west, north, east = 42.838070, -71.006272, 42.862226, -70.969131  # Bounding box around lake attitash
+    south, west, north, east = 42.273340, -71.759992, 42.284612, -71.752954 # Bounding box around lake Quinsigamond
     data = fetch_water_bodies(south, west, north, east)
-
-    # Now, 'data' contains the water body polygons in that bounding box.
-    # You can further process this data or visualize it using a tool or library
-
+    
     # Convert Overpass JSON data to GeoDataFrame
     water_gdf = overpass_json_to_geodf(data)
 
