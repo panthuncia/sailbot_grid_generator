@@ -284,7 +284,9 @@ def fix_geometry(geometry):
 def main():
     # Define a bounding box (e.g., around a part of a city or lake)
     #south, west, north, east = 42.838070, -71.006272, 42.862226, -70.969131  # Bounding box around lake attitash
-    south, west, north, east = 42.273340, -71.759992, 42.284612, -71.752954 # Bounding box around lake Quinsigamond
+    #south, west, north, east = 42.273340, -71.759992, 42.284612, -71.752954 # Bounding box around lake Quinsigamond
+    south, west, north, east = 42.272388, -71.807720, 42.274761, -71.803917 # Bounding box around the lab
+
     data = fetch_water_bodies(south, west, north, east)
     
     # Convert Overpass JSON data to GeoDataFrame
