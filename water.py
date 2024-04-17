@@ -113,7 +113,7 @@ globalGrid = None
 globalResolution = 0
 globalExtentMap = []
 
-def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resolution=0.0001):
+def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resolution=0.00005):
     global globalGrid
     global globalWest
     global globalSouth
@@ -215,7 +215,7 @@ def plot_with_osm_background_and_grid(gdf, grid, south, west, north, east, resol
     # Show the plot
     plt.show()
 
-def create_occupancy_grid(data, south, west, north, east, resolution=0.0001, filename = "grid_binary.npy"):
+def create_occupancy_grid(data, south, west, north, east, resolution=0.00005, filename = "grid_binary.npy"):
     """
     Create an occupancy grid from water body data, checking for cell intersection with geometries.
     Parameters:
@@ -236,7 +236,7 @@ def create_occupancy_grid(data, south, west, north, east, resolution=0.0001, fil
     grid_y = int((north - south) / resolution) + 1
     grid = np.zeros((grid_y, grid_x))
     
-    # # Iterate through each polygon in the data
+    # Iterate through each polygon in the data
     # for geometry in data['geometry']:
     #     if geometry is not None and not geometry.is_empty:
     #         for ix in range(grid_x):
@@ -284,9 +284,9 @@ def fix_geometry(geometry):
 def main():
     # Define a bounding box (e.g., around a part of a city or lake)
     #south, west, north, east = 42.838070, -71.006272, 42.862226, -70.969131  # Bounding box around lake attitash
-    #south, west, north, east = 42.273340, -71.759992, 42.284612, -71.752954 # Bounding box around lake Quinsigamond
-    south, west, north, east = 42.272388, -71.807720, 42.274761, -71.803917 # Bounding box around the lab
-
+    #south, west, north, east = 42.274460, -71.759992, 42.280359, -71.752954 # Bounding box around lake Quinsigamond
+    #south, west, north, east = 42.272388, -71.807720, 42.274761, -71.803917 # Bounding box around the lab
+    south, west, north, east = 42.02697586726279, -71.86015011725914, 42.04778634200546, -71.830713667753 # Webster lake
     data = fetch_water_bodies(south, west, north, east)
     
     # Convert Overpass JSON data to GeoDataFrame
